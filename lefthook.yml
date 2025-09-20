@@ -25,4 +25,4 @@ pre-push:
           git commit -m "chore(release): обновлен changelog"
         fi
         echo "Отправка изменений..."
-        git push --no-verify
+        git push --set-upstream origin main --no-verify
