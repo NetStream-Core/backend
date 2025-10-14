@@ -5,3 +5,6 @@
 
 *.test
 *.out
+
+*.pb.go
+*_grpc.pb.go
