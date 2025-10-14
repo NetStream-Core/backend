@@ -1,3 +1,6 @@
 * text eol=lf
 
 *.go -text diff=golang
+
+.gitattributes export-ignore
+.gitignore     export-ignore
