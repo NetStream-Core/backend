@@ -1,10 +1,14 @@
-update:
-    git submodule update --init --remote
+build:
+    go build ./...
 
-proto:
-    protoc \
-      --go_out=. \
-      --go_opt=paths=source_relative \
-      --go-grpc_out=. \
-      --go-grpc_opt=paths=source_relative \
-      proto/metrics.proto
+test:
+    go test ./...
+
+vet:
+    go vet ./...
+
+lint:
+    golangci-lint run ./...
+
+run:
+    go run ./cmd
