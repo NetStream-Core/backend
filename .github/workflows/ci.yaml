@@ -25,12 +25,31 @@ jobs:
           --health-retries 10
     env:
       POSTGRES_TEST_DSN: postgresql://netstream:netstream-dev@localhost:5432/netstream_control_plane?sslmode=disable
+      OBJECTSTORE_TEST_ENDPOINT: localhost:8333
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v6
         with:
           go-version: "1.24"
+
+      # a service container can't take a custom command, and the S3
+      # gateway needs one (`-s3 -s3.config=...`), so it runs as a plain step
+      - name: Start object store (SeaweedFS S3 gateway)
+        run: |
+          cat > /tmp/s3-config.json <<'EOF'
+          {"identities":[{"name":"netstream","credentials":[{"accessKey":"netstream","secretKey":"netstream-dev"}],"actions":["Admin","Read","Write"]}]}
+          EOF
+          docker run -d --name objectstore -p 8333:8333 \
+            -v /tmp/s3-config.json:/etc/seaweedfs/s3-config.json:ro \
+            chrislusf/seaweedfs:latest \
+            server -dir=/data -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3-config.json -s3.autoCreateBucket
+          for _ in $(seq 1 20); do
+            curl -s -o /dev/null http://localhost:8333 && exit 0
+            sleep 1
+          done
+          echo "object store did not become reachable in time" >&2
+          exit 1
 
       - run: go build ./...
 

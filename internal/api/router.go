@@ -16,4 +16,6 @@ func (a *API) InitRoutes() {
 	modelRoutes.POST("", a.RegisterModel)
 	modelRoutes.GET("", a.ListModels)
 	modelRoutes.GET("/:name/:version", a.GetModel)
+	modelRoutes.PUT("/:name/:version/artifact", a.UploadModelArtifact)
+	modelRoutes.GET("/:name/:version/artifact", a.DownloadModelArtifact)
 }
