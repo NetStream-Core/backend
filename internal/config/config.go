@@ -5,8 +5,7 @@ import (
 )
 
 type Config struct {
-	Database databaseConfig
-	Server   serverConfig
+	Server serverConfig
 }
 
 func NewConfig() (*Config, error) {
