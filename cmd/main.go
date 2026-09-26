@@ -1,9 +1,14 @@
 package main
 
 import (
+	"context"
+
 	"network-monitor-backend/internal/api"
 	"network-monitor-backend/internal/config"
 	"network-monitor-backend/internal/logger"
+	"network-monitor-backend/internal/models"
+	"network-monitor-backend/internal/sensors"
+	"network-monitor-backend/internal/storage/postgres"
 
 	"go.uber.org/zap"
 )
@@ -23,7 +28,18 @@ func main() {
 	}
 	logger.Logger.Info("Loaded SERVER_PORT", zap.String("port", cfg.Server.Port))
 
-	r := api.New()
+	ctx := context.Background()
+	db, err := postgres.New(ctx, cfg.Postgres.BuildDSN())
+	if err != nil {
+		logger.Logger.Fatal("Failed to connect to control-plane database", zap.Error(err))
+	}
+	defer db.Close()
+
+	if err := db.Migrate(ctx); err != nil {
+		logger.Logger.Fatal("Failed to migrate control-plane database", zap.Error(err))
+	}
+
+	r := api.New(sensors.NewService(db.Pool), models.NewService(db.Pool))
 	logger.Logger.Info("Starting HTTP server on :" + cfg.Server.Port)
 	if err := r.Router.Run(":" + cfg.Server.Port); err != nil {
 		logger.Logger.Fatal("HTTP server failed", zap.Error(err))

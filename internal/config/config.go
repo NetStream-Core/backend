@@ -5,7 +5,8 @@ import (
 )
 
 type Config struct {
-	Server serverConfig
+	Server   serverConfig
+	Postgres postgresConfig
 }
 
 func NewConfig() (*Config, error) {
