@@ -18,7 +18,8 @@ func TestHomeHandlerReturnsOK(t *testing.T) {
 	}
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.GET("/", HomeHandler)
+	a := &API{}
+	router.GET("/", a.Home)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()

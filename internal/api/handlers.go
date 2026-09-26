@@ -2,14 +2,12 @@ package api
 
 import (
 	"net/http"
-	"network-monitor-backend/internal/logger"
 
 	"github.com/gin-gonic/gin"
 )
 
-func HomeHandler(ctx *gin.Context) {
-	logger.Logger.Info("Received request")
+func (a *API) Home(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{
-		"message": "yo!",
+		"message": "netstream control plane",
 	})
 }

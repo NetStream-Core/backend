@@ -9,6 +9,22 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: netstream
+          POSTGRES_PASSWORD: netstream-dev
+          POSTGRES_DB: netstream_control_plane
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      POSTGRES_TEST_DSN: postgresql://netstream:netstream-dev@localhost:5432/netstream_control_plane?sslmode=disable
     steps:
       - uses: actions/checkout@v7
 
