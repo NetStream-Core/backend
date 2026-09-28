@@ -12,6 +12,15 @@ import (
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
+// migrationLockID identifies this project's migrations for pg_advisory_lock.
+// Two processes racing to call Migrate on the same database (this happens
+// in tests, where every package's own testDB helper migrates it) serialize
+// on this lock instead of racing CREATE TABLE IF NOT EXISTS, which is not
+// safe under concurrent callers: two sessions can both see "doesn't exist
+// yet" and collide inserting the same row into Postgres's own pg_type
+// catalog for the new table.
+const migrationLockID = 72719004
+
 type Postgres struct {
 	Pool *pgxpool.Pool
 }
@@ -36,6 +45,22 @@ func (p *Postgres) Close() {
 // yet, in filename order, tracking applied versions in schema_migrations —
 // the same idempotent-per-file convention `deploy` uses for ClickHouse.
 func (p *Postgres) Migrate(ctx context.Context) error {
+	conn, err := p.Pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire connection for migration lock: %w", err)
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLockID); err != nil {
+		return fmt.Errorf("acquire migration lock: %w", err)
+	}
+	defer func() {
+		// Session-level advisory locks are tied to the connection that took
+		// them, not to ctx, so unlocking must not be skipped just because
+		// the caller's context was already canceled.
+		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, migrationLockID)
+	}()
+
 	if _, err := p.Pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version     TEXT PRIMARY KEY,
