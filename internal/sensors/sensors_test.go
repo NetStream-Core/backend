@@ -131,6 +131,73 @@ func TestGetDesiredConfigFailsWhenNoneWasEverSet(t *testing.T) {
 	}
 }
 
+func TestAckActualConfigFailsForAnUnknownSensor(t *testing.T) {
+	db := testDB(t)
+	svc := sensors.NewService(db.Pool)
+
+	_, err := svc.AckActualConfig(context.Background(), "no-such-sensor", 1)
+	if !errors.Is(err, sensors.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestAckActualConfigRecordsWhatTheAgentApplied(t *testing.T) {
+	db := testDB(t)
+	svc := sensors.NewService(db.Pool)
+	ctx := context.Background()
+
+	sensor, err := svc.Register(ctx, sensors.RegisterRequest{HostID: "h4"})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if sensor.ActualConfigVersion != 0 {
+		t.Fatalf("expected a freshly registered sensor to start at actual_config_version 0, got %d", sensor.ActualConfigVersion)
+	}
+
+	if _, err := svc.SetDesiredConfig(ctx, "h4", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("set desired config: %v", err)
+	}
+	if _, err := svc.SetDesiredConfig(ctx, "h4", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("set desired config again: %v", err)
+	}
+
+	acked, err := svc.AckActualConfig(ctx, "h4", 2)
+	if err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+	if acked.ActualConfigVersion != 2 {
+		t.Fatalf("expected actual_config_version 2, got %d", acked.ActualConfigVersion)
+	}
+	if acked.ConfigVersion != 2 {
+		t.Fatalf("expected desired config_version to stay at 2, got %d", acked.ConfigVersion)
+	}
+}
+
+func TestAckActualConfigNeverMovesBackwards(t *testing.T) {
+	db := testDB(t)
+	svc := sensors.NewService(db.Pool)
+	ctx := context.Background()
+
+	if _, err := svc.Register(ctx, sensors.RegisterRequest{HostID: "h5"}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	if _, err := svc.AckActualConfig(ctx, "h5", 5); err != nil {
+		t.Fatalf("ack 5: %v", err)
+	}
+
+	// A delayed retry of an older ack (e.g. the agent's request to the
+	// control plane was retried after it had already moved on to a newer
+	// version) must not roll actual_config_version back.
+	acked, err := svc.AckActualConfig(ctx, "h5", 3)
+	if err != nil {
+		t.Fatalf("ack 3: %v", err)
+	}
+	if acked.ActualConfigVersion != 5 {
+		t.Fatalf("expected actual_config_version to stay at 5, got %d", acked.ActualConfigVersion)
+	}
+}
+
 func TestListOrdersByHostID(t *testing.T) {
 	db := testDB(t)
 	svc := sensors.NewService(db.Pool)
