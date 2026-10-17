@@ -22,7 +22,9 @@ go run ./cmd
 
 | Переменная | По умолчанию | Значение |
 |---|---|---|
-| `SERVER_PORT` | `9999` | Порт HTTP API |
+| `SERVER_PORT` | `9999` | Порт HTTP(S) API |
+| `TLS_CERT_FILE` | нет | Путь к сертификату; вместе с `TLS_KEY_FILE` включает HTTPS вместо HTTP. Задан только один из двух — ошибка при старте |
+| `TLS_KEY_FILE` | нет | Путь к приватному ключу |
 | `POSTGRES_HOST` | `localhost` | Хост Postgres |
 | `POSTGRES_PORT` | `5432` | Порт Postgres |
 | `POSTGRES_USER` | `netstream` | Пользователь |
@@ -63,6 +65,26 @@ curl -X PUT localhost:9999/api/v1/models/isolation-forest/v1/artifact \
 curl -L localhost:9999/api/v1/models/isolation-forest/v1/artifact -o model.bin
 ```
 
+## TLS
+
+Только серверный TLS (`TLS_CERT_FILE`/`TLS_KEY_FILE`) — закрывает подмену desired-конфига на пути между backend и агентом (см. `agent/README.md`, раздел «Control plane», и `docs/adr/ADR-005-response-model.md`), без выпуска и ротации клиентских сертификатов агентам (mTLS) — это отдельная, заметно более крупная задача (PKI для клиентских сертификатов), пока не начата.
+
+Самоподписанный сертификат для лаборатории:
+
+```bash
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+    -keyout tls.key -out tls.crt -subj "/CN=localhost" \
+    -addext "basicConstraints=critical,CA:FALSE" \
+    -addext "keyUsage=digitalSignature,keyEncipherment" \
+    -addext "extendedKeyUsage=serverAuth" \
+    -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+TLS_CERT_FILE=tls.crt TLS_KEY_FILE=tls.key go run ./cmd/main.go
+```
+
+`-addext` не опциональны: `openssl req -x509` по умолчанию помечает сертификат как `CA:TRUE`, что rustls (используемый агентом) отвергает как невалидный serving-сертификат (`CaUsedAsEndEntity`) — проверено вживую при подготовке этой фичи, просто `-subj` без остальных `-addext` даёт сертификат, который backend принимает, а агент — нет.
+
+Агент должен указать этот же сертификат в `CONTROL_PLANE_CA_FILE` (см. `agent/README.md`), иначе не примет его как доверенный — самоподписанный сертификат не входит ни в один системный список корневых центров сертификации.
+
 ## Пока не реализовано
 
-RBAC, инциденты (таблица `incidents` создана, обработчиков ещё нет — сначала нужен M16, генерирующий детекции, которые в инциденты превращать), фактическая доставка desired-конфига агенту (сейчас backend хранит и отдаёт конфиг по запросу, но агент его ещё не запрашивает и не применяет — это следующий шаг на стороне `agent`).
+RBAC, инциденты (таблица `incidents` создана, обработчиков ещё нет — сначала нужен M16, генерирующий детекции, которые в инциденты превращать), mTLS (аутентификация агента сертификатом, а не только шифрование канала).
