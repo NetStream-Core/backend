@@ -11,6 +11,7 @@ func (a *API) InitRoutes() {
 	sensorRoutes.GET("/:host_id", a.GetSensor)
 	sensorRoutes.GET("/:host_id/config", a.GetDesiredConfig)
 	sensorRoutes.PUT("/:host_id/config", a.SetDesiredConfig)
+	sensorRoutes.PUT("/:host_id/config/ack", a.AckActualConfig)
 
 	modelRoutes := v1.Group("/models")
 	modelRoutes.POST("", a.RegisterModel)

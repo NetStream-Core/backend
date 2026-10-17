@@ -66,6 +66,30 @@ func (a *API) GetDesiredConfig(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, config)
 }
 
+type ackActualConfigRequest struct {
+	Version int64 `json:"version"`
+}
+
+func (a *API) AckActualConfig(ctx *gin.Context) {
+	var req ackActualConfigRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	sensor, err := a.sensors.AckActualConfig(ctx.Request.Context(), ctx.Param("host_id"), req.Version)
+	if errors.Is(err, sensors.ErrNotFound) {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "sensor not found"})
+		return
+	}
+	if err != nil {
+		logger.Logger.Error("Failed to ack actual config", zap.Error(err))
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "failed to ack actual config"})
+		return
+	}
+	ctx.JSON(http.StatusOK, sensor)
+}
+
 func (a *API) SetDesiredConfig(ctx *gin.Context) {
 	var payload json.RawMessage
 	if err := ctx.ShouldBindJSON(&payload); err != nil {

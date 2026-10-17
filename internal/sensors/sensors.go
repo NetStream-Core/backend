@@ -18,13 +18,14 @@ import (
 var ErrNotFound = errors.New("sensor not found")
 
 type Sensor struct {
-	ID            int64     `json:"id"`
-	HostID        string    `json:"host_id"`
-	Hostname      string    `json:"hostname"`
-	AgentVersion  string    `json:"agent_version"`
-	ConfigVersion int64     `json:"config_version"`
-	LastSeen      time.Time `json:"last_seen"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID                  int64     `json:"id"`
+	HostID              string    `json:"host_id"`
+	Hostname            string    `json:"hostname"`
+	AgentVersion        string    `json:"agent_version"`
+	ConfigVersion       int64     `json:"config_version"`
+	ActualConfigVersion int64     `json:"actual_config_version"`
+	LastSeen            time.Time `json:"last_seen"`
+	CreatedAt           time.Time `json:"created_at"`
 }
 
 type Config struct {
@@ -65,10 +66,11 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*Sensor, e
 			hostname = EXCLUDED.hostname,
 			agent_version = EXCLUDED.agent_version,
 			last_seen = now()
-		RETURNING id, host_id, hostname, agent_version, config_version, last_seen, created_at
+		RETURNING id, host_id, hostname, agent_version, config_version,
+			actual_config_version, last_seen, created_at
 	`, req.HostID, req.Hostname, req.AgentVersion).Scan(
 		&sensor.ID, &sensor.HostID, &sensor.Hostname, &sensor.AgentVersion,
-		&sensor.ConfigVersion, &sensor.LastSeen, &sensor.CreatedAt,
+		&sensor.ConfigVersion, &sensor.ActualConfigVersion, &sensor.LastSeen, &sensor.CreatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("upsert sensor: %w", err)
@@ -78,7 +80,8 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*Sensor, e
 
 func (s *Service) List(ctx context.Context) ([]Sensor, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, host_id, hostname, agent_version, config_version, last_seen, created_at
+		SELECT id, host_id, hostname, agent_version, config_version,
+			actual_config_version, last_seen, created_at
 		FROM sensors ORDER BY host_id
 	`)
 	if err != nil {
@@ -91,7 +94,7 @@ func (s *Service) List(ctx context.Context) ([]Sensor, error) {
 		var sensor Sensor
 		if err := rows.Scan(
 			&sensor.ID, &sensor.HostID, &sensor.Hostname, &sensor.AgentVersion,
-			&sensor.ConfigVersion, &sensor.LastSeen, &sensor.CreatedAt,
+			&sensor.ConfigVersion, &sensor.ActualConfigVersion, &sensor.LastSeen, &sensor.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan sensor: %w", err)
 		}
@@ -103,17 +106,44 @@ func (s *Service) List(ctx context.Context) ([]Sensor, error) {
 func (s *Service) Get(ctx context.Context, hostID string) (*Sensor, error) {
 	var sensor Sensor
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, host_id, hostname, agent_version, config_version, last_seen, created_at
+		SELECT id, host_id, hostname, agent_version, config_version,
+			actual_config_version, last_seen, created_at
 		FROM sensors WHERE host_id = $1
 	`, hostID).Scan(
 		&sensor.ID, &sensor.HostID, &sensor.Hostname, &sensor.AgentVersion,
-		&sensor.ConfigVersion, &sensor.LastSeen, &sensor.CreatedAt,
+		&sensor.ConfigVersion, &sensor.ActualConfigVersion, &sensor.LastSeen, &sensor.CreatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get sensor: %w", err)
+	}
+	return &sensor, nil
+}
+
+// AckActualConfig records the config version a sensor reports having
+// actually applied. Uses GREATEST rather than a plain assignment so a
+// delayed retry of an older ack (network retry, agent restart replaying its
+// last known state) can never move actual_config_version backwards past a
+// newer ack that already arrived.
+func (s *Service) AckActualConfig(ctx context.Context, hostID string, version int64) (*Sensor, error) {
+	var sensor Sensor
+	err := s.pool.QueryRow(ctx, `
+		UPDATE sensors
+		SET actual_config_version = GREATEST(actual_config_version, $2)
+		WHERE host_id = $1
+		RETURNING id, host_id, hostname, agent_version, config_version,
+			actual_config_version, last_seen, created_at
+	`, hostID, version).Scan(
+		&sensor.ID, &sensor.HostID, &sensor.Hostname, &sensor.AgentVersion,
+		&sensor.ConfigVersion, &sensor.ActualConfigVersion, &sensor.LastSeen, &sensor.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("ack actual config: %w", err)
 	}
 	return &sensor, nil
 }
