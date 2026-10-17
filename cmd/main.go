@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 
 	"network-monitor-backend/internal/api"
 	"network-monitor-backend/internal/config"
@@ -53,8 +54,18 @@ func main() {
 	}
 
 	r := api.New(sensors.NewService(db.Pool), models.NewService(db.Pool), objectStore)
-	logger.Logger.Info("Starting HTTP server on :" + cfg.Server.Port)
-	if err := r.Router.Run(":" + cfg.Server.Port); err != nil {
+
+	switch {
+	case cfg.Server.TLSCertFile != "" && cfg.Server.TLSKeyFile != "":
+		logger.Logger.Info("Starting HTTPS server on :" + cfg.Server.Port)
+		err = r.Router.RunTLS(":"+cfg.Server.Port, cfg.Server.TLSCertFile, cfg.Server.TLSKeyFile)
+	case cfg.Server.TLSCertFile == "" && cfg.Server.TLSKeyFile == "":
+		logger.Logger.Info("Starting HTTP server on :" + cfg.Server.Port)
+		err = r.Router.Run(":" + cfg.Server.Port)
+	default:
+		err = errors.New("TLS_CERT_FILE and TLS_KEY_FILE must both be set, or neither")
+	}
+	if err != nil {
 		logger.Logger.Fatal("HTTP server failed", zap.Error(err))
 	}
 }
