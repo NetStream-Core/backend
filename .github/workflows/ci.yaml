@@ -31,7 +31,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.24"
+          go-version: "1.25"
 
       # a service container can't take a custom command, and the S3
       # gateway needs one (`-s3 -s3.config=...`), so it runs as a plain step
@@ -64,7 +64,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.24"
+          go-version: "1.25"
 
       - uses: golangci/golangci-lint-action@v8
         with:
