@@ -3,6 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"network-monitor-backend/internal/api"
 	"network-monitor-backend/internal/config"
@@ -14,6 +18,8 @@ import (
 
 	"go.uber.org/zap"
 )
+
+const shutdownTimeout = 10 * time.Second
 
 func main() {
 	if err := logger.New(); err != nil {
@@ -54,18 +60,39 @@ func main() {
 	}
 
 	r := api.New(sensors.NewService(db.Pool), models.NewService(db.Pool), objectStore)
+	srv := &http.Server{Addr: ":" + cfg.Server.Port, Handler: r.Router}
 
-	switch {
-	case cfg.Server.TLSCertFile != "" && cfg.Server.TLSKeyFile != "":
-		logger.Logger.Info("Starting HTTPS server on :" + cfg.Server.Port)
-		err = r.Router.RunTLS(":"+cfg.Server.Port, cfg.Server.TLSCertFile, cfg.Server.TLSKeyFile)
-	case cfg.Server.TLSCertFile == "" && cfg.Server.TLSKeyFile == "":
-		logger.Logger.Info("Starting HTTP server on :" + cfg.Server.Port)
-		err = r.Router.Run(":" + cfg.Server.Port)
-	default:
-		err = errors.New("TLS_CERT_FILE and TLS_KEY_FILE must both be set, or neither")
+	serveErr := make(chan error, 1)
+	go func() {
+		switch {
+		case cfg.Server.TLSCertFile != "" && cfg.Server.TLSKeyFile != "":
+			logger.Logger.Info("Starting HTTPS server on :" + cfg.Server.Port)
+			serveErr <- srv.ListenAndServeTLS(cfg.Server.TLSCertFile, cfg.Server.TLSKeyFile)
+		case cfg.Server.TLSCertFile == "" && cfg.Server.TLSKeyFile == "":
+			logger.Logger.Info("Starting HTTP server on :" + cfg.Server.Port)
+			serveErr <- srv.ListenAndServe()
+		default:
+			serveErr <- errors.New("TLS_CERT_FILE and TLS_KEY_FILE must both be set, or neither")
+		}
+	}()
+
+	signalCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	select {
+	case err := <-serveErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Logger.Fatal("HTTP server failed", zap.Error(err))
+		}
+	case <-signalCtx.Done():
+		stop()
+		logger.Logger.Info("Shutdown signal received, draining in-flight requests")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			logger.Logger.Error("Graceful shutdown did not complete cleanly", zap.Error(err))
+		}
 	}
-	if err != nil {
-		logger.Logger.Fatal("HTTP server failed", zap.Error(err))
-	}
+
+	logger.Logger.Info("Backend stopped")
 }
