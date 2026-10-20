@@ -79,6 +79,10 @@ func (a *API) GetDesiredConfig(ctx *gin.Context) {
 
 type ackActualConfigRequest struct {
 	Version int64 `json:"version"`
+	// UnappliedFields: payload keys this version set that the agent could
+	// not actually apply (hot-reload limitations — see
+	// agent/src/control_plane.rs). Empty/omitted means fully applied.
+	UnappliedFields []string `json:"unapplied_fields"`
 }
 
 func (a *API) AckActualConfig(ctx *gin.Context) {
@@ -88,9 +92,15 @@ func (a *API) AckActualConfig(ctx *gin.Context) {
 		return
 	}
 
-	sensor, err := a.sensors.AckActualConfig(ctx.Request.Context(), ctx.Param("host_id"), req.Version)
+	sensor, err := a.sensors.AckActualConfig(
+		ctx.Request.Context(), ctx.Param("host_id"), req.Version, req.UnappliedFields,
+	)
 	if errors.Is(err, sensors.ErrNotFound) {
 		ctx.JSON(http.StatusNotFound, gin.H{"error": "sensor not found"})
+		return
+	}
+	if errors.Is(err, sensors.ErrInvalidConfigVersion) {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	if err != nil {
