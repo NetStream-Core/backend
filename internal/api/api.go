@@ -13,15 +13,27 @@ type API struct {
 	sensors     *sensors.Service
 	models      *models.Service
 	objectStore *objectstore.Store
+	// mtlsEnabled gates every auth middleware in InitRoutes. It is true
+	// only when the server was actually started with a client CA
+	// configured (see cmd/main.go) — with it false, routes behave exactly
+	// as before mTLS existed, for local development and existing tests
+	// that talk to the API over plain HTTP.
+	mtlsEnabled bool
 }
 
-func New(sensorService *sensors.Service, modelService *models.Service, objectStore *objectstore.Store) *API {
+func New(
+	sensorService *sensors.Service,
+	modelService *models.Service,
+	objectStore *objectstore.Store,
+	mtlsEnabled bool,
+) *API {
 	r := gin.Default()
 	api := &API{
 		Router:      r,
 		sensors:     sensorService,
 		models:      modelService,
 		objectStore: objectStore,
+		mtlsEnabled: mtlsEnabled,
 	}
 
 	api.InitRoutes()
