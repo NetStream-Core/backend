@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
+	"fmt"
 	"net/http"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -18,6 +22,24 @@ import (
 
 	"go.uber.org/zap"
 )
+
+// buildClientCAPool reads TLSClientCAFile, if set, into a pool the server
+// verifies client certificates against. Returns a nil pool (mTLS off) if
+// the file isn't configured.
+func buildClientCAPool(path string) (*x509.CertPool, error) {
+	if path == "" {
+		return nil, nil
+	}
+	pem, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read TLS_CLIENT_CA_FILE: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("TLS_CLIENT_CA_FILE %s contains no valid certificates", path)
+	}
+	return pool, nil
+}
 
 const shutdownTimeout = 10 * time.Second
 
@@ -59,8 +81,31 @@ func main() {
 		logger.Logger.Fatal("Failed to connect to object store", zap.Error(err))
 	}
 
-	r := api.New(sensors.NewService(db.Pool), models.NewService(db.Pool), objectStore)
+	clientCAs, err := buildClientCAPool(cfg.Server.TLSClientCAFile)
+	if err != nil {
+		logger.Logger.Fatal("Failed to load client CA", zap.Error(err))
+	}
+	mtlsEnabled := clientCAs != nil
+	if mtlsEnabled && (cfg.Server.TLSCertFile == "" || cfg.Server.TLSKeyFile == "") {
+		logger.Logger.Fatal("TLS_CLIENT_CA_FILE requires TLS_CERT_FILE and TLS_KEY_FILE to also be set")
+	}
+	if !mtlsEnabled {
+		logger.Logger.Warn(
+			"Starting without mTLS (TLS_CLIENT_CA_FILE not set) — the control API accepts " +
+				"requests from anyone who can reach this port; do not expose it beyond " +
+				"localhost or a trusted network",
+		)
+	}
+
+	r := api.New(sensors.NewService(db.Pool), models.NewService(db.Pool), objectStore, mtlsEnabled)
 	srv := &http.Server{Addr: ":" + cfg.Server.Port, Handler: r.Router}
+	if mtlsEnabled {
+		srv.TLSConfig = &tls.Config{
+			ClientCAs:  clientCAs,
+			ClientAuth: tls.RequireAndVerifyClientCert,
+			MinVersion: tls.VersionTLS12,
+		}
+	}
 
 	serveErr := make(chan error, 1)
 	go func() {

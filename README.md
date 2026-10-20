@@ -25,6 +25,7 @@ go run ./cmd
 | `SERVER_PORT` | `9999` | Порт HTTP(S) API |
 | `TLS_CERT_FILE` | нет | Путь к сертификату; вместе с `TLS_KEY_FILE` включает HTTPS вместо HTTP. Задан только один из двух — ошибка при старте |
 | `TLS_KEY_FILE` | нет | Путь к приватному ключу |
+| `TLS_CLIENT_CA_FILE` | нет | Путь к CA для проверки клиентских сертификатов — включает mTLS (требует `TLS_CERT_FILE`/`TLS_KEY_FILE`, иначе ошибка при старте). Без неё API принимает запросы без клиентского сертификата от кого угодно, кто достучится до порта — см. «mTLS» ниже |
 | `POSTGRES_HOST` | `localhost` | Хост Postgres |
 | `POSTGRES_PORT` | `5432` | Порт Postgres |
 | `POSTGRES_USER` | `netstream` | Пользователь |
@@ -67,9 +68,9 @@ curl -L localhost:9999/api/v1/models/isolation-forest/v1/artifact -o model.bin
 
 ## TLS
 
-Только серверный TLS (`TLS_CERT_FILE`/`TLS_KEY_FILE`) — закрывает подмену desired-конфига на пути между backend и агентом (см. `agent/README.md`, раздел «Control plane», и `docs/adr/ADR-005-response-model.md`), без выпуска и ротации клиентских сертификатов агентам (mTLS) — это отдельная, заметно более крупная задача (PKI для клиентских сертификатов), пока не начата.
+Серверный TLS (`TLS_CERT_FILE`/`TLS_KEY_FILE`) закрывает подмену desired-конфига на пути между backend и агентом (см. `agent/README.md`, раздел «Control plane», и `docs/adr/ADR-005-response-model.md`), но сам по себе не аутентифицирует вызывающего — без клиентского сертификата любой, кто достучится до порта, может читать/менять конфигурацию сенсоров и публиковать модели.
 
-Самоподписанный сертификат для лаборатории:
+Самоподписанный сертификат сервера для лаборатории:
 
 ```bash
 openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
@@ -85,6 +86,51 @@ TLS_CERT_FILE=tls.crt TLS_KEY_FILE=tls.key go run ./cmd/main.go
 
 Агент должен указать этот же сертификат в `CONTROL_PLANE_CA_FILE` (см. `agent/README.md`), иначе не примет его как доверенный — самоподписанный сертификат не входит ни в один системный список корневых центров сертификации.
 
+## mTLS (аутентификация и авторизация)
+
+`TLS_CLIENT_CA_FILE` требует клиентский сертификат на каждый запрос (`tls.RequireAndVerifyClientCert`) и определяет личность и роль вызывающего по его сертификату — без отдельной системы пользователей/токенов:
+
+- **`CommonName`** — идентификатор вызывающего: `host_id` сенсора или имя оператора.
+- **`OrganizationalUnit` содержит `operator`** — вызывающий оператор (полный доступ); любой другой (или пустой) `OU` — сенсор, ограниченный собственным `host_id`.
+
+Правила авторизации (`internal/api/auth.go`):
+
+| Маршрут | Сенсор | Оператор |
+|---|---|---|
+| `POST /sensors/register` | только свой `host_id` в теле запроса | любой |
+| `GET /sensors` | 403 | да |
+| `GET /sensors/:host_id`, `.../config`, `PUT .../config/ack` | только свой `:host_id` | любой |
+| `PUT /sensors/:host_id/config` | 403 (desired-конфиг назначает оператор, не сам сенсор) | да |
+| `/models/*` (регистрация, список, загрузка/скачивание артефакта) | 403 | да |
+
+Без `TLS_CLIENT_CA_FILE` поведение не меняется (как раньше — без аутентификации вообще; при старте без неё backend пишет в лог явное предупреждение, что порт не должен быть доступен за пределами доверенной сети).
+
+Сертификаты для лаборатории — тот же CA подписывает серверный и клиентские:
+
+```bash
+# CA
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+    -keyout ca.key -out ca.crt -subj "/CN=netstream-test-ca" \
+    -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+    -addext "keyUsage=critical,keyCertSign,cRLSign"
+
+# клиентский сертификат сенсора — OU не указан, значит роль "сенсор"
+openssl req -newkey rsa:2048 -nodes -keyout sensor-1.key -out sensor-1.csr -subj "/CN=sensor-1"
+openssl x509 -req -in sensor-1.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out sensor-1.crt -days 365 \
+    -extfile <(printf "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth")
+
+# клиентский сертификат оператора — OU=operator даёт полный доступ
+openssl req -newkey rsa:2048 -nodes -keyout operator.key -out operator.csr -subj "/CN=alice/OU=operator"
+openssl x509 -req -in operator.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out operator.crt -days 365 \
+    -extfile <(printf "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth")
+
+TLS_CERT_FILE=server.crt TLS_KEY_FILE=server.key TLS_CLIENT_CA_FILE=ca.crt go run ./cmd
+```
+
+Проверено вживую (настоящий handshake, не только unit-тесты `internal/api/auth_test.go`): запрос без клиентского сертификата — TLS-алерт `certificate required`, ещё до того как запрос доходит до какого-либо обработчика; `sensor-1` может зарегистрировать и прочитать только `sensor-1`, получает 403 на `GET /sensors` и на конфиг `sensor-2`; `alice` (`OU=operator`) проходит везде.
+
+Выпуск и ротация клиентских сертификатов сенсорам (сама PKI — удостоверяющий центр, выдача сертификата при первом подключении агента, отзыв) — отдельная задача, не описанная здесь: этот раздел — про то, как backend проверяет уже выпущенный сертификат, а не про то, как его получить агенту.
+
 ## Пока не реализовано
 
-RBAC, инциденты (таблица `incidents` создана, обработчиков ещё нет — сначала нужен M16, генерирующий детекции, которые в инциденты превращать), mTLS (аутентификация агента сертификатом, а не только шифрование канала).
+RBAC сверх ролей "сенсор"/"оператор" из mTLS (более гранулярные права внутри роли оператора), инциденты (таблица `incidents` создана, обработчиков ещё нет — сначала нужен M16, генерирующий детекции, которые в инциденты превращать), выпуск и ротация клиентских сертификатов сенсорам (сама PKI, не её проверка).
