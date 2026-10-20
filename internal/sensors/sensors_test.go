@@ -135,9 +135,54 @@ func TestAckActualConfigFailsForAnUnknownSensor(t *testing.T) {
 	db := testDB(t)
 	svc := sensors.NewService(db.Pool)
 
-	_, err := svc.AckActualConfig(context.Background(), "no-such-sensor", 1)
+	_, err := svc.AckActualConfig(context.Background(), "no-such-sensor", 1, nil)
 	if !errors.Is(err, sensors.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestAckActualConfigFailsWhenVersionExceedsTheSensorsDesiredConfigVersion(t *testing.T) {
+	db := testDB(t)
+	svc := sensors.NewService(db.Pool)
+	ctx := context.Background()
+
+	if _, err := svc.Register(ctx, sensors.RegisterRequest{HostID: "h4a"}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := svc.SetDesiredConfig(ctx, "h4a", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("set desired config: %v", err)
+	}
+
+	// config_version is 1 — acking 2 claims to have applied a version
+	// that was never pushed to this sensor at all.
+	_, err := svc.AckActualConfig(ctx, "h4a", 2, nil)
+	if !errors.Is(err, sensors.ErrInvalidConfigVersion) {
+		t.Fatalf("expected ErrInvalidConfigVersion, got %v", err)
+	}
+}
+
+func TestAckActualConfigFailsWhenTheVersionWasNeverIssuedAsAConfigRow(t *testing.T) {
+	db := testDB(t)
+	svc := sensors.NewService(db.Pool)
+	ctx := context.Background()
+
+	sensor, err := svc.Register(ctx, sensors.RegisterRequest{HostID: "h4b"})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	// Bump config_version directly, without the matching agent_configs
+	// row SetDesiredConfig would normally insert in the same transaction
+	// — simulates a corrupted/partially-written state (or a bug
+	// elsewhere) rather than something reachable through the service's
+	// own API, which is exactly why this check exists: config_version
+	// alone is not proof a config was actually issued.
+	if _, err := db.Pool.Exec(ctx, "UPDATE sensors SET config_version = 1 WHERE id = $1", sensor.ID); err != nil {
+		t.Fatalf("corrupt config_version: %v", err)
+	}
+
+	_, err = svc.AckActualConfig(ctx, "h4b", 1, nil)
+	if !errors.Is(err, sensors.ErrInvalidConfigVersion) {
+		t.Fatalf("expected ErrInvalidConfigVersion, got %v", err)
 	}
 }
 
@@ -161,7 +206,7 @@ func TestAckActualConfigRecordsWhatTheAgentApplied(t *testing.T) {
 		t.Fatalf("set desired config again: %v", err)
 	}
 
-	acked, err := svc.AckActualConfig(ctx, "h4", 2)
+	acked, err := svc.AckActualConfig(ctx, "h4", 2, nil)
 	if err != nil {
 		t.Fatalf("ack: %v", err)
 	}
@@ -170,6 +215,42 @@ func TestAckActualConfigRecordsWhatTheAgentApplied(t *testing.T) {
 	}
 	if acked.ConfigVersion != 2 {
 		t.Fatalf("expected desired config_version to stay at 2, got %d", acked.ConfigVersion)
+	}
+	if string(acked.ActualConfigUnappliedFields) != "[]" {
+		t.Fatalf("expected no unapplied fields, got %s", acked.ActualConfigUnappliedFields)
+	}
+}
+
+func TestAckActualConfigRecordsUnappliedFieldsAndClearsThemOnFullConvergence(t *testing.T) {
+	db := testDB(t)
+	svc := sensors.NewService(db.Pool)
+	ctx := context.Background()
+
+	if _, err := svc.Register(ctx, sensors.RegisterRequest{HostID: "h4c"}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	for range 2 {
+		if _, err := svc.SetDesiredConfig(ctx, "h4c", json.RawMessage(`{"response_mode":"enforce"}`)); err != nil {
+			t.Fatalf("set desired config: %v", err)
+		}
+	}
+
+	partial, err := svc.AckActualConfig(ctx, "h4c", 1, []string{"response_mode"})
+	if err != nil {
+		t.Fatalf("ack 1 (partial): %v", err)
+	}
+	if string(partial.ActualConfigUnappliedFields) != `["response_mode"]` {
+		t.Fatalf("expected [\"response_mode\"] unapplied, got %s", partial.ActualConfigUnappliedFields)
+	}
+
+	// A restart picked up response_mode for real this time — version 2,
+	// fully applied.
+	full, err := svc.AckActualConfig(ctx, "h4c", 2, nil)
+	if err != nil {
+		t.Fatalf("ack 2 (full): %v", err)
+	}
+	if string(full.ActualConfigUnappliedFields) != "[]" {
+		t.Fatalf("expected no unapplied fields after full convergence, got %s", full.ActualConfigUnappliedFields)
 	}
 }
 
@@ -181,20 +262,32 @@ func TestAckActualConfigNeverMovesBackwards(t *testing.T) {
 	if _, err := svc.Register(ctx, sensors.RegisterRequest{HostID: "h5"}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+	for range 5 {
+		if _, err := svc.SetDesiredConfig(ctx, "h5", json.RawMessage(`{}`)); err != nil {
+			t.Fatalf("set desired config: %v", err)
+		}
+	}
 
-	if _, err := svc.AckActualConfig(ctx, "h5", 5); err != nil {
+	if _, err := svc.AckActualConfig(ctx, "h5", 5, nil); err != nil {
 		t.Fatalf("ack 5: %v", err)
 	}
 
 	// A delayed retry of an older ack (e.g. the agent's request to the
 	// control plane was retried after it had already moved on to a newer
-	// version) must not roll actual_config_version back.
-	acked, err := svc.AckActualConfig(ctx, "h5", 3)
+	// version) must not roll actual_config_version — or the unapplied
+	// fields that go with it — backwards.
+	acked, err := svc.AckActualConfig(ctx, "h5", 3, []string{"response_mode"})
 	if err != nil {
 		t.Fatalf("ack 3: %v", err)
 	}
 	if acked.ActualConfigVersion != 5 {
 		t.Fatalf("expected actual_config_version to stay at 5, got %d", acked.ActualConfigVersion)
+	}
+	if string(acked.ActualConfigUnappliedFields) != "[]" {
+		t.Fatalf(
+			"expected the stale ack's unapplied fields not to overwrite version 5's, got %s",
+			acked.ActualConfigUnappliedFields,
+		)
 	}
 }
 
