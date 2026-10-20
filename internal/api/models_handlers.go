@@ -76,6 +76,22 @@ func (a *API) UploadModelArtifact(ctx *gin.Context) {
 		return
 	}
 
+	// The backend never holds a signing key and cannot compute or verify
+	// these itself — it only stores what the uploader (`ml`) asserts about
+	// its own bytes, for a downloader to check against its own trusted
+	// public key before deserializing. Requiring both headers up front
+	// means there is no way to publish an artifact with no integrity
+	// values attached at all.
+	sha256Hex := ctx.GetHeader("X-Artifact-Sha256")
+	signatureB64 := ctx.GetHeader("X-Artifact-Signature")
+	if sha256Hex == "" || signatureB64 == "" {
+		ctx.JSON(
+			http.StatusBadRequest,
+			gin.H{"error": "X-Artifact-Sha256 and X-Artifact-Signature headers are required"},
+		)
+		return
+	}
+
 	key := fmt.Sprintf("%s/%s/artifact", name, version)
 	contentType := ctx.ContentType()
 	if contentType == "" {
@@ -89,7 +105,7 @@ func (a *API) UploadModelArtifact(ctx *gin.Context) {
 		return
 	}
 
-	model, err := a.models.SetArtifactURI(ctx.Request.Context(), name, version, uri)
+	model, err := a.models.SetArtifact(ctx.Request.Context(), name, version, uri, sha256Hex, signatureB64)
 	if err != nil {
 		logger.Logger.Error("Failed to record artifact uri", zap.Error(err))
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record artifact uri"})
