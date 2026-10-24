@@ -8,6 +8,7 @@ type Config struct {
 	Server      serverConfig
 	Postgres    postgresConfig
 	ObjectStore objectStoreConfig
+	Kafka       kafkaConfig
 }
 
 func NewConfig() (*Config, error) {

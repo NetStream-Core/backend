@@ -7,9 +7,11 @@ func (a *API) InitRoutes() {
 
 	sensorRoutes := v1.Group("/sensors")
 	modelRoutes := v1.Group("/models")
+	incidentRoutes := v1.Group("/incidents")
 	if a.mtlsEnabled {
 		sensorRoutes.Use(requireClientCert())
 		modelRoutes.Use(requireClientCert(), requireOperator())
+		incidentRoutes.Use(requireClientCert(), requireOperator())
 	}
 
 	// A sensor enrolls itself (no host_id yet to scope to) and only an
@@ -36,4 +38,8 @@ func (a *API) InitRoutes() {
 	modelRoutes.GET("/:name/:version", a.GetModel)
 	modelRoutes.PUT("/:name/:version/artifact", a.UploadModelArtifact)
 	modelRoutes.GET("/:name/:version/artifact", a.DownloadModelArtifact)
+
+	incidentRoutes.GET("", a.ListIncidents)
+	incidentRoutes.GET("/:id", a.GetIncident)
+	incidentRoutes.PUT("/:id/close", a.CloseIncident)
 }
