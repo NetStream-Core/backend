@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
@@ -18,6 +19,8 @@ import (
 	"network-monitor-backend/internal/incidents"
 	"network-monitor-backend/internal/logger"
 	"network-monitor-backend/internal/models"
+	"network-monitor-backend/internal/pki"
+	"network-monitor-backend/internal/sensorcerts"
 	"network-monitor-backend/internal/sensors"
 	"network-monitor-backend/internal/storage/objectstore"
 	"network-monitor-backend/internal/storage/postgres"
@@ -41,6 +44,47 @@ func buildClientCAPool(path string) (*x509.CertPool, error) {
 		return nil, fmt.Errorf("TLS_CLIENT_CA_FILE %s contains no valid certificates", path)
 	}
 	return pool, nil
+}
+
+// loadCA reads CACertFile/CAKeyFile, if both set, into the CA this
+// process signs sensor certificates with. Returns a nil *pki.CA (issuance
+// off) if neither is configured — same "empty means not configured"
+// convention as buildClientCAPool and the Kafka/incidents feature.
+func loadCA(certPath, keyPath string) (*pki.CA, error) {
+	if certPath == "" && keyPath == "" {
+		return nil, nil
+	}
+	if certPath == "" || keyPath == "" {
+		return nil, errors.New("CA_CERT_FILE and CA_KEY_FILE must both be set, or neither")
+	}
+
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		return nil, fmt.Errorf("read CA_CERT_FILE: %w", err)
+	}
+	certBlock, _ := pem.Decode(certPEM)
+	if certBlock == nil {
+		return nil, fmt.Errorf("CA_CERT_FILE %s contains no PEM block", certPath)
+	}
+	caCert, err := x509.ParseCertificate(certBlock.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse CA_CERT_FILE: %w", err)
+	}
+
+	keyPEM, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("read CA_KEY_FILE: %w", err)
+	}
+	keyBlock, _ := pem.Decode(keyPEM)
+	if keyBlock == nil {
+		return nil, fmt.Errorf("CA_KEY_FILE %s contains no PEM block", keyPath)
+	}
+	caKey, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse CA_KEY_FILE (expected PKCS#8): %w", err)
+	}
+
+	return &pki.CA{Cert: caCert, Key: caKey}, nil
 }
 
 const shutdownTimeout = 10 * time.Second
@@ -99,6 +143,15 @@ func main() {
 		)
 	}
 
+	ca, err := loadCA(cfg.PKI.CACertFile, cfg.PKI.CAKeyFile)
+	if err != nil {
+		logger.Logger.Fatal("Failed to load issuance CA", zap.Error(err))
+	}
+	if ca == nil {
+		logger.Logger.Info("CA_CERT_FILE/CA_KEY_FILE not set — sensor certificate issuance disabled")
+	}
+	certValidity := time.Duration(cfg.PKI.CertValidityDays) * 24 * time.Hour
+
 	incidentService := incidents.NewService(db.Pool)
 
 	if cfg.Kafka.BootstrapServers != "" {
@@ -114,7 +167,10 @@ func main() {
 		logger.Logger.Info("KAFKA_BOOTSTRAP_SERVERS not set — incident correlator disabled")
 	}
 
-	r := api.New(sensors.NewService(db.Pool), models.NewService(db.Pool), incidentService, objectStore, mtlsEnabled)
+	r := api.New(
+		sensors.NewService(db.Pool), models.NewService(db.Pool), incidentService,
+		sensorcerts.NewService(db.Pool), objectStore, ca, certValidity, mtlsEnabled,
+	)
 	srv := &http.Server{Addr: ":" + cfg.Server.Port, Handler: r.Router}
 	if mtlsEnabled {
 		srv.TLSConfig = &tls.Config{
