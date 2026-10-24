@@ -97,3 +97,70 @@ func TestRequireSelfOrOperatorAcceptsAnOperatorActingOnAnySensor(t *testing.T) {
 		t.Fatalf("expected %d, got %d", http.StatusOK, code)
 	}
 }
+
+func TestRequireOperatorAcceptsAReadOnlyOperatorIdentity(t *testing.T) {
+	code := runWithMiddleware(
+		certRequest("bob", "operator-readonly"), nil, requireClientCert(), requireOperator(),
+	)
+	if code != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, code)
+	}
+}
+
+func TestRequireWriteOperatorRejectsAReadOnlyOperatorIdentity(t *testing.T) {
+	code := runWithMiddleware(
+		certRequest("bob", "operator-readonly"), nil, requireClientCert(), requireWriteOperator(),
+	)
+	if code != http.StatusForbidden {
+		t.Fatalf("expected %d, got %d", http.StatusForbidden, code)
+	}
+}
+
+func TestRequireWriteOperatorRejectsASensorIdentity(t *testing.T) {
+	code := runWithMiddleware(certRequest("sensor-1"), nil, requireClientCert(), requireWriteOperator())
+	if code != http.StatusForbidden {
+		t.Fatalf("expected %d, got %d", http.StatusForbidden, code)
+	}
+}
+
+func TestRequireWriteOperatorAcceptsAFullOperatorIdentity(t *testing.T) {
+	code := runWithMiddleware(
+		certRequest("alice", "operator"), nil, requireClientCert(), requireWriteOperator(),
+	)
+	if code != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, code)
+	}
+}
+
+func TestRequireSelfOrWriteOperatorAcceptsASensorActingOnItself(t *testing.T) {
+	code := runWithMiddleware(
+		certRequest("sensor-1"),
+		gin.Params{{Key: "host_id", Value: "sensor-1"}},
+		requireClientCert(), requireSelfOrWriteOperator(),
+	)
+	if code != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, code)
+	}
+}
+
+func TestRequireSelfOrWriteOperatorRejectsAReadOnlyOperatorActingOnAnotherSensor(t *testing.T) {
+	code := runWithMiddleware(
+		certRequest("bob", "operator-readonly"),
+		gin.Params{{Key: "host_id", Value: "sensor-2"}},
+		requireClientCert(), requireSelfOrWriteOperator(),
+	)
+	if code != http.StatusForbidden {
+		t.Fatalf("expected %d, got %d", http.StatusForbidden, code)
+	}
+}
+
+func TestRequireSelfOrWriteOperatorAcceptsAFullOperatorActingOnAnotherSensor(t *testing.T) {
+	code := runWithMiddleware(
+		certRequest("alice", "operator"),
+		gin.Params{{Key: "host_id", Value: "sensor-2"}},
+		requireClientCert(), requireSelfOrWriteOperator(),
+	)
+	if code != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, code)
+	}
+}
