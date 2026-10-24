@@ -11,12 +11,17 @@ const identityContextKey = "identity"
 
 // Identity is the authenticated caller of an mTLS-protected request,
 // derived from its client certificate: CommonName names the caller (a
-// sensor's host_id, or an operator's own name), and IsOperator comes from
-// whether the certificate's OrganizationalUnit contains "operator" — any
-// other (or absent) OU is treated as a sensor, scoped to its own host_id.
+// sensor's host_id, or an operator's own name). OrganizationalUnit maps
+// to a role: "operator" is a full operator (read and write), "operator-
+// readonly" is an operator for read access only (IsOperator true, but
+// CanWrite false) — for an auditor or a dashboard that should see
+// sensors/models/incidents without being able to change configuration,
+// publish models, or close incidents. Any other (or absent) OU is a
+// sensor, scoped to its own host_id.
 type Identity struct {
 	CommonName string
 	IsOperator bool
+	CanWrite   bool
 }
 
 func clientIdentity(ctx *gin.Context) (Identity, bool) {
@@ -24,9 +29,13 @@ func clientIdentity(ctx *gin.Context) (Identity, bool) {
 		return Identity{}, false
 	}
 	cert := ctx.Request.TLS.PeerCertificates[0]
+	ou := cert.Subject.OrganizationalUnit
+	fullOperator := slices.Contains(ou, "operator")
+	readOnlyOperator := slices.Contains(ou, "operator-readonly")
 	return Identity{
 		CommonName: cert.Subject.CommonName,
-		IsOperator: slices.Contains(cert.Subject.OrganizationalUnit, "operator"),
+		IsOperator: fullOperator || readOnlyOperator,
+		CanWrite:   fullOperator,
 	}, true
 }
 
@@ -49,7 +58,9 @@ func requireClientCert() gin.HandlerFunc {
 
 // requireOperator additionally rejects a verified sensor identity, for
 // routes a sensor should never reach even for its own host_id (model
-// publication, the sensor registry as a whole).
+// publication, the sensor registry as a whole). A read-only operator
+// passes this check too — it only screens out sensors, not write access;
+// routes that mutate state also need requireWriteOperator.
 func requireOperator() gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		identity := ctx.MustGet(identityContextKey).(Identity) //nolint:forcetypeassert // set by requireClientCert earlier in the chain
@@ -61,10 +72,25 @@ func requireOperator() gin.HandlerFunc {
 	}
 }
 
-// requireSelfOrOperator lets an operator act on any sensor, but restricts
-// a sensor identity to the `:host_id` path parameter matching its own
-// CommonName — one sensor's certificate can't read or ack another
-// sensor's configuration.
+// requireWriteOperator rejects a read-only operator (OrganizationalUnit
+// "operator-readonly") the same way requireOperator rejects a sensor —
+// for routes that change state (publish a model, set a sensor's desired
+// config, close an incident) rather than just read it.
+func requireWriteOperator() gin.HandlerFunc {
+	return func(ctx *gin.Context) {
+		identity := ctx.MustGet(identityContextKey).(Identity) //nolint:forcetypeassert // set by requireClientCert earlier in the chain
+		if !identity.CanWrite {
+			ctx.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "write access required"})
+			return
+		}
+		ctx.Next()
+	}
+}
+
+// requireSelfOrOperator lets any operator (read-only included) act on any
+// sensor for a read, but restricts a sensor identity to the `:host_id`
+// path parameter matching its own CommonName — one sensor's certificate
+// can't read another sensor's configuration.
 func requireSelfOrOperator() gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		identity := ctx.MustGet(identityContextKey).(Identity) //nolint:forcetypeassert // set by requireClientCert earlier in the chain
@@ -72,6 +98,25 @@ func requireSelfOrOperator() gin.HandlerFunc {
 			ctx.AbortWithStatusJSON(
 				http.StatusForbidden,
 				gin.H{"error": "sensors may only access their own resources"},
+			)
+			return
+		}
+		ctx.Next()
+	}
+}
+
+// requireSelfOrWriteOperator is requireSelfOrOperator's write-side
+// counterpart, for a sensor acknowledging its own config: a sensor acting
+// on itself is always allowed (that's the whole point of self), but
+// acting on another sensor's behalf needs a full operator, not a
+// read-only one.
+func requireSelfOrWriteOperator() gin.HandlerFunc {
+	return func(ctx *gin.Context) {
+		identity := ctx.MustGet(identityContextKey).(Identity) //nolint:forcetypeassert // set by requireClientCert earlier in the chain
+		if identity.CommonName != ctx.Param("host_id") && !identity.CanWrite {
+			ctx.AbortWithStatusJSON(
+				http.StatusForbidden,
+				gin.H{"error": "sensors may only act on their own resources"},
 			)
 			return
 		}

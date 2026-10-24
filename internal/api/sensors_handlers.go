@@ -21,7 +21,7 @@ func (a *API) RegisterSensor(ctx *gin.Context) {
 
 	if a.mtlsEnabled {
 		identity := ctx.MustGet(identityContextKey).(Identity) //nolint:forcetypeassert // set by requireClientCert
-		if !identity.IsOperator && identity.CommonName != req.HostID {
+		if identity.CommonName != req.HostID && !identity.CanWrite {
 			ctx.JSON(
 				http.StatusForbidden,
 				gin.H{"error": "a sensor certificate may only register its own host_id"},

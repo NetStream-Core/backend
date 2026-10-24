@@ -105,17 +105,23 @@ TLS_CERT_FILE=tls.crt TLS_KEY_FILE=tls.key go run ./cmd/main.go
 `TLS_CLIENT_CA_FILE` требует клиентский сертификат на каждый запрос (`tls.RequireAndVerifyClientCert`) и определяет личность и роль вызывающего по его сертификату — без отдельной системы пользователей/токенов:
 
 - **`CommonName`** — идентификатор вызывающего: `host_id` сенсора или имя оператора.
-- **`OrganizationalUnit` содержит `operator`** — вызывающий оператор (полный доступ); любой другой (или пустой) `OU` — сенсор, ограниченный собственным `host_id`.
+- **`OrganizationalUnit`** определяет роль: `operator` — полный доступ (чтение и запись); `operator-readonly` — то же чтение, но без права менять что-либо (аудитор, дашборд); любой другой (или пустой) `OU` — сенсор, ограниченный собственным `host_id`.
 
 Правила авторизации (`internal/api/auth.go`):
 
-| Маршрут | Сенсор | Оператор |
-|---|---|---|
-| `POST /sensors/register` | только свой `host_id` в теле запроса | любой |
-| `GET /sensors` | 403 | да |
-| `GET /sensors/:host_id`, `.../config`, `PUT .../config/ack` | только свой `:host_id` | любой |
-| `PUT /sensors/:host_id/config` | 403 (desired-конфиг назначает оператор, не сам сенсор) | да |
-| `/models/*` (регистрация, список, загрузка/скачивание артефакта) | 403 | да |
+| Маршрут | Сенсор | Оператор (readonly) | Оператор (полный) |
+|---|---|---|---|
+| `POST /sensors/register` | только свой `host_id` в теле запроса | 403 | любой |
+| `GET /sensors` | 403 | да | да |
+| `GET /sensors/:host_id`, `.../config` | только свой `:host_id` | любой | любой |
+| `PUT /sensors/:host_id/config/ack` | только свой `:host_id` | 403 (кроме своего, но у оператора своего `host_id` не бывает) | любой |
+| `PUT /sensors/:host_id/config` | 403 (desired-конфиг назначает оператор, не сам сенсор) | 403 | да |
+| `GET /models`, `GET /models/:name/:version`, `GET .../artifact` | 403 | да | да |
+| `POST /models`, `PUT /models/:name/:version/artifact` | 403 | 403 | да |
+| `GET /incidents`, `GET /incidents/:id` | 403 | да | да |
+| `PUT /incidents/:id/close` | 403 | 403 | да |
+
+`operator-readonly` закрывает конкретный, названный во внешнем ревью, случай: наблюдатель/дашборд/аудитор, которому нужно видеть сенсоры, модели и инциденты, но не должно быть возможности что-либо менять — раньше единственной альтернативой было давать полный `operator`-сертификат или вообще обходиться без мониторинга. Более гранулярные права внутри самой роли оператора (например, «может закрывать инциденты, но не публиковать модели») за пределами read/write — не описаны, за пределами объёма этой правки.
 
 Без `TLS_CLIENT_CA_FILE` поведение не меняется (как раньше — без аутентификации вообще; при старте без неё backend пишет в лог явное предупреждение, что порт не должен быть доступен за пределами доверенной сети).
 
@@ -138,8 +144,15 @@ openssl req -newkey rsa:2048 -nodes -keyout operator.key -out operator.csr -subj
 openssl x509 -req -in operator.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out operator.crt -days 365 \
     -extfile <(printf "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth")
 
+# клиентский сертификат оператора только на чтение — OU=operator-readonly
+openssl req -newkey rsa:2048 -nodes -keyout readonly.key -out readonly.csr -subj "/CN=bob/OU=operator-readonly"
+openssl x509 -req -in readonly.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out readonly.crt -days 365 \
+    -extfile <(printf "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth")
+
 TLS_CERT_FILE=server.crt TLS_KEY_FILE=server.key TLS_CLIENT_CA_FILE=ca.crt go run ./cmd
 ```
+
+Проверено вживую (настоящий handshake): `bob` (`OU=operator-readonly`) получает `200` на `GET /sensors`/`GET /incidents`, но `403` на `POST /models` и `PUT /sensors/:host_id/config`; `alice` (`OU=operator`) проходит оба.
 
 Проверено вживую (настоящий handshake, не только unit-тесты `internal/api/auth_test.go`): запрос без клиентского сертификата — TLS-алерт `certificate required`, ещё до того как запрос доходит до какого-либо обработчика; `sensor-1` может зарегистрировать и прочитать только `sensor-1`, получает 403 на `GET /sensors` и на конфиг `sensor-2`; `alice` (`OU=operator`) проходит везде.
 
@@ -160,4 +173,4 @@ TLS_CERT_FILE=server.crt TLS_KEY_FILE=server.key TLS_CLIENT_CA_FILE=ca.crt go ru
 
 ## Пока не реализовано
 
-RBAC сверх ролей "сенсор"/"оператор" из mTLS (более гранулярные права внутри роли оператора), выпуск и ротация клиентских сертификатов сенсорам (сама PKI, не её проверка).
+Более гранулярные права внутри самой роли оператора, чем просто чтение/запись (см. `operator-readonly` выше — это закрывает базовый случай «наблюдатель», не произвольную матрицу прав), выпуск и ротация клиентских сертификатов сенсорам (сама PKI, не её проверка).

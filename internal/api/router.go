@@ -23,8 +23,8 @@ func (a *API) InitRoutes() {
 		sensorRoutes.GET("", requireOperator(), a.ListSensors)
 		sensorRoutes.GET("/:host_id", requireSelfOrOperator(), a.GetSensor)
 		sensorRoutes.GET("/:host_id/config", requireSelfOrOperator(), a.GetDesiredConfig)
-		sensorRoutes.PUT("/:host_id/config", requireOperator(), a.SetDesiredConfig)
-		sensorRoutes.PUT("/:host_id/config/ack", requireSelfOrOperator(), a.AckActualConfig)
+		sensorRoutes.PUT("/:host_id/config", requireWriteOperator(), a.SetDesiredConfig)
+		sensorRoutes.PUT("/:host_id/config/ack", requireSelfOrWriteOperator(), a.AckActualConfig)
 	} else {
 		sensorRoutes.GET("", a.ListSensors)
 		sensorRoutes.GET("/:host_id", a.GetSensor)
@@ -33,13 +33,22 @@ func (a *API) InitRoutes() {
 		sensorRoutes.PUT("/:host_id/config/ack", a.AckActualConfig)
 	}
 
-	modelRoutes.POST("", a.RegisterModel)
 	modelRoutes.GET("", a.ListModels)
 	modelRoutes.GET("/:name/:version", a.GetModel)
-	modelRoutes.PUT("/:name/:version/artifact", a.UploadModelArtifact)
 	modelRoutes.GET("/:name/:version/artifact", a.DownloadModelArtifact)
+	if a.mtlsEnabled {
+		modelRoutes.POST("", requireWriteOperator(), a.RegisterModel)
+		modelRoutes.PUT("/:name/:version/artifact", requireWriteOperator(), a.UploadModelArtifact)
+	} else {
+		modelRoutes.POST("", a.RegisterModel)
+		modelRoutes.PUT("/:name/:version/artifact", a.UploadModelArtifact)
+	}
 
 	incidentRoutes.GET("", a.ListIncidents)
 	incidentRoutes.GET("/:id", a.GetIncident)
-	incidentRoutes.PUT("/:id/close", a.CloseIncident)
+	if a.mtlsEnabled {
+		incidentRoutes.PUT("/:id/close", requireWriteOperator(), a.CloseIncident)
+	} else {
+		incidentRoutes.PUT("/:id/close", a.CloseIncident)
+	}
 }
