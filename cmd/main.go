@@ -14,6 +14,8 @@ import (
 
 	"network-monitor-backend/internal/api"
 	"network-monitor-backend/internal/config"
+	"network-monitor-backend/internal/detections"
+	"network-monitor-backend/internal/incidents"
 	"network-monitor-backend/internal/logger"
 	"network-monitor-backend/internal/models"
 	"network-monitor-backend/internal/sensors"
@@ -97,7 +99,22 @@ func main() {
 		)
 	}
 
-	r := api.New(sensors.NewService(db.Pool), models.NewService(db.Pool), objectStore, mtlsEnabled)
+	incidentService := incidents.NewService(db.Pool)
+
+	if cfg.Kafka.BootstrapServers != "" {
+		detectionsCtx, cancelDetections := context.WithCancel(context.Background())
+		defer cancelDetections()
+		go detections.Run(detectionsCtx, detections.Config{
+			BootstrapServers: cfg.Kafka.BootstrapServers,
+			DetectionsTopic:  cfg.Kafka.DetectionsTopic,
+			AlertsTopic:      cfg.Kafka.AlertsTopic,
+			ConsumerGroup:    cfg.Kafka.ConsumerGroup,
+		}, incidentService)
+	} else {
+		logger.Logger.Info("KAFKA_BOOTSTRAP_SERVERS not set — incident correlator disabled")
+	}
+
+	r := api.New(sensors.NewService(db.Pool), models.NewService(db.Pool), incidentService, objectStore, mtlsEnabled)
 	srv := &http.Server{Addr: ":" + cfg.Server.Port, Handler: r.Router}
 	if mtlsEnabled {
 		srv.TLSConfig = &tls.Config{
