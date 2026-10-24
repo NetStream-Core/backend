@@ -25,12 +25,18 @@ func (a *API) InitRoutes() {
 		sensorRoutes.GET("/:host_id/config", requireSelfOrOperator(), a.GetDesiredConfig)
 		sensorRoutes.PUT("/:host_id/config", requireWriteOperator(), a.SetDesiredConfig)
 		sensorRoutes.PUT("/:host_id/config/ack", requireSelfOrWriteOperator(), a.AckActualConfig)
+		sensorRoutes.POST("/:host_id/certificate", requireWriteOperator(), a.IssueSensorCertificate)
+		sensorRoutes.GET("/:host_id/certificate", requireOperator(), a.ListSensorCertificates)
+		sensorRoutes.PUT("/:host_id/certificate/revoke", requireWriteOperator(), a.RevokeSensorCertificate)
 	} else {
 		sensorRoutes.GET("", a.ListSensors)
 		sensorRoutes.GET("/:host_id", a.GetSensor)
 		sensorRoutes.GET("/:host_id/config", a.GetDesiredConfig)
 		sensorRoutes.PUT("/:host_id/config", a.SetDesiredConfig)
 		sensorRoutes.PUT("/:host_id/config/ack", a.AckActualConfig)
+		sensorRoutes.POST("/:host_id/certificate", a.IssueSensorCertificate)
+		sensorRoutes.GET("/:host_id/certificate", a.ListSensorCertificates)
+		sensorRoutes.PUT("/:host_id/certificate/revoke", a.RevokeSensorCertificate)
 	}
 
 	modelRoutes.GET("", a.ListModels)
