@@ -34,10 +34,13 @@ type Model struct {
 	// itself; it only stores what the uploader asserts, for `ml` to verify
 	// against its own trusted public key before deserializing the
 	// artifact it downloads.
-	ArtifactSHA256    string    `json:"artifact_sha256"`
-	ArtifactSignature string    `json:"artifact_signature"`
-	Status            string    `json:"status"`
-	CreatedAt         time.Time `json:"created_at"`
+	ArtifactSHA256        string    `json:"artifact_sha256"`
+	ArtifactSignature     string    `json:"artifact_signature"`
+	OnnxArtifactURI       string    `json:"onnx_artifact_uri"`
+	OnnxArtifactSHA256    string    `json:"onnx_artifact_sha256"`
+	OnnxArtifactSignature string    `json:"onnx_artifact_signature"`
+	Status                string    `json:"status"`
+	CreatedAt             time.Time `json:"created_at"`
 }
 
 type RegisterRequest struct {
@@ -91,14 +94,17 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*Model, er
 }
 
 const modelColumns = `id, name, version, algorithm, features_version, dataset_ref, git_sha, metrics,
-	artifact_uri, artifact_sha256, artifact_signature, status, created_at`
+	artifact_uri, artifact_sha256, artifact_signature,
+	onnx_artifact_uri, onnx_artifact_sha256, onnx_artifact_signature, status, created_at`
 
 func scanModel(row pgx.Row) (*Model, error) {
 	var model Model
 	err := row.Scan(
 		&model.ID, &model.Name, &model.Version, &model.Algorithm, &model.FeaturesVersion,
 		&model.DatasetRef, &model.GitSHA, &model.Metrics, &model.ArtifactURI,
-		&model.ArtifactSHA256, &model.ArtifactSignature, &model.Status, &model.CreatedAt,
+		&model.ArtifactSHA256, &model.ArtifactSignature,
+		&model.OnnxArtifactURI, &model.OnnxArtifactSHA256, &model.OnnxArtifactSignature,
+		&model.Status, &model.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -160,6 +166,23 @@ func (s *Service) SetArtifact(
 	}
 	if err != nil {
 		return nil, fmt.Errorf("set artifact: %w", err)
+	}
+	return model, nil
+}
+
+func (s *Service) SetOnnxArtifact(
+	ctx context.Context, name, version, artifactURI, sha256Hex, signatureB64 string,
+) (*Model, error) {
+	model, err := scanModel(s.pool.QueryRow(ctx, `
+		UPDATE models SET onnx_artifact_uri = $3, onnx_artifact_sha256 = $4, onnx_artifact_signature = $5
+		WHERE name = $1 AND version = $2
+		RETURNING `+modelColumns+`
+	`, name, version, artifactURI, sha256Hex, signatureB64))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("set onnx artifact: %w", err)
 	}
 	return model, nil
 }

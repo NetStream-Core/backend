@@ -96,6 +96,37 @@ func TestGetFailsForAnUnknownModel(t *testing.T) {
 	}
 }
 
+func TestSetOnnxArtifactUpdatesTheOnnxFields(t *testing.T) {
+	db := testDB(t)
+	svc := models.NewService(db.Pool)
+	ctx := context.Background()
+
+	if _, err := svc.Register(ctx, models.RegisterRequest{Name: "gb", Version: "v1"}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	model, err := svc.SetOnnxArtifact(ctx, "gb", "v1", "/gb/v1/onnx", "deadbeef", "sig==")
+	if err != nil {
+		t.Fatalf("set onnx artifact: %v", err)
+	}
+	if model.OnnxArtifactURI != "/gb/v1/onnx" || model.OnnxArtifactSHA256 != "deadbeef" || model.OnnxArtifactSignature != "sig==" {
+		t.Fatalf("expected onnx artifact fields to be set, got %+v", model)
+	}
+	if model.ArtifactURI != "" {
+		t.Fatalf("expected the plain artifact_uri to stay empty, got %q", model.ArtifactURI)
+	}
+}
+
+func TestSetOnnxArtifactFailsForAnUnknownModel(t *testing.T) {
+	db := testDB(t)
+	svc := models.NewService(db.Pool)
+
+	_, err := svc.SetOnnxArtifact(context.Background(), "no-such-model", "v1", "/x", "a", "b")
+	if !errors.Is(err, models.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
 func TestListOrdersByNameThenNewestFirst(t *testing.T) {
 	db := testDB(t)
 	svc := models.NewService(db.Pool)

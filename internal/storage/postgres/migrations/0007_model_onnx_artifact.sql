@@ -1,0 +1,4 @@
+ALTER TABLE models
+    ADD COLUMN IF NOT EXISTS onnx_artifact_uri TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS onnx_artifact_sha256 TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS onnx_artifact_signature TEXT NOT NULL DEFAULT '';
