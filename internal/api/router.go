@@ -42,12 +42,15 @@ func (a *API) InitRoutes() {
 	modelRoutes.GET("", a.ListModels)
 	modelRoutes.GET("/:name/:version", a.GetModel)
 	modelRoutes.GET("/:name/:version/artifact", a.DownloadModelArtifact)
+	modelRoutes.GET("/:name/:version/onnx", a.DownloadModelOnnxArtifact)
 	if a.mtlsEnabled {
 		modelRoutes.POST("", requireWriteOperator(), a.RegisterModel)
 		modelRoutes.PUT("/:name/:version/artifact", requireWriteOperator(), a.UploadModelArtifact)
+		modelRoutes.PUT("/:name/:version/onnx", requireWriteOperator(), a.UploadModelOnnxArtifact)
 	} else {
 		modelRoutes.POST("", a.RegisterModel)
 		modelRoutes.PUT("/:name/:version/artifact", a.UploadModelArtifact)
+		modelRoutes.PUT("/:name/:version/onnx", a.UploadModelOnnxArtifact)
 	}
 
 	incidentRoutes.GET("", a.ListIncidents)
